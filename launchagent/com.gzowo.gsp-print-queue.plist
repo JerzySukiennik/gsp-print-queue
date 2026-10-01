@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.gzowo.gsp-print-queue</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/jurek/GSP-Print-Queue/run.sh</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/jurek/GSP-Print-Queue</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/jurek/GSP-Print-Queue/data/server.log</string>
+  <key>StandardErrorPath</key><string>/Users/jurek/GSP-Print-Queue/data/server.log</string>
+</dict>
+</plist>

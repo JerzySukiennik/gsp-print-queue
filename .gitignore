@@ -1,0 +1,6 @@
+config.json
+data/
+venv/
+__pycache__/
+.DS_Store
+Niepotrzebne/

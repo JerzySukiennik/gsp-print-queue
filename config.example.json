@@ -1,0 +1,7 @@
+{
+  "printer_ip": "192.168.1.19",
+  "serial": "00M09A322501276",
+  "access_code": "PASTE_LAN_ACCESS_CODE",
+  "port": 8745,
+  "url_base": "file:///sdcard"
+}

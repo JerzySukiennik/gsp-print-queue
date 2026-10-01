@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>GSP Print Queue</title>
+<style>
+:root{
+  --bg:#f4f4f2;--card:#ffffff;--ink:#141414;--mute:#6b6b6b;--line:#e2e2df;
+  --accent:#141414;--accent-ink:#ffffff;--run:#1f9d55;--err:#d23b2f;--warn:#b7791f;
+  --radius:14px;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#0f0f0f;--card:#1a1a1a;--ink:#f2f2f2;--mute:#9a9a9a;--line:#2a2a2a;--accent:#f2f2f2;--accent-ink:#0f0f0f;--run:#30c46a;--err:#ff5f52;--warn:#e0a23a}
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+body{padding:max(12px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom))}
+.wrap{max-width:720px;margin:0 auto}
+header{display:flex;align-items:center;justify-content:space-between;padding:8px 2px 14px}
+header h1{font-size:17px;font-weight:600;margin:0;letter-spacing:-.01em}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--mute);margin-right:8px;vertical-align:1px}
+.dot.on{background:var(--run)}
+.sub{color:var(--mute);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:12px}
+.state{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.state .big{font-size:28px;font-weight:600;letter-spacing:-.02em}
+.state .big.run{color:var(--run)}
+.state .big.err{color:var(--err)}
+.state .big.warn{color:var(--warn)}
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin:12px 0 8px}
+.bar i{display:block;height:100%;background:var(--run);width:0;transition:width .6s ease}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.kv div{background:var(--bg);border-radius:10px;padding:8px 10px}
+.kv b{display:block;font-size:17px;font-weight:600}
+.kv span{font-size:12px;color:var(--mute)}
+.trays{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.tray{display:flex;align-items:center;gap:7px;padding:6px 10px;border:1px solid var(--line);border-radius:999px;font-size:13px}
+.sw{width:14px;height:14px;border-radius:50%;border:1px solid rgba(0,0,0,.15);flex:none}
+.tray.empty{color:var(--mute);border-style:dashed}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:9px 14px;border-radius:10px;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:transform .08s ease,background .15s ease}
+button:active{transform:scale(.97)}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button.run{background:var(--run);color:#fff;border-color:var(--run)}
+button.danger{color:var(--err);border-color:var(--err)}
+button.sm{padding:6px 10px;font-size:13px;border-radius:8px}
+button:disabled{opacity:.4;cursor:default;transform:none}
+.actions{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+.qhead{display:flex;align-items:center;justify-content:space-between;margin:18px 2px 10px}
+.qhead h2{font-size:15px;font-weight:600;margin:0}
+.drop{border:1.5px dashed var(--line);border-radius:var(--radius);padding:22px 16px;text-align:center;color:var(--mute);cursor:pointer;transition:border-color .15s,background .15s}
+.drop.over{border-color:var(--ink);background:var(--card)}
+.drop input{display:none}
+.job{position:relative}
+.job.current{border-color:var(--run)}
+.job .top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.job .name{font-weight:600;font-size:16px;letter-spacing:-.01em;word-break:break-word}
+.badge{font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:3px 8px;border-radius:999px;background:var(--bg);color:var(--mute);white-space:nowrap}
+.badge.printing{background:var(--run);color:#fff}
+.badge.failed,.badge.stopped{background:var(--err);color:#fff}
+.badge.done{background:var(--ink);color:var(--card)}
+.meta{color:var(--mute);font-size:13px;margin-top:4px}
+.fil{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.fil label{display:flex;align-items:center;gap:7px;font-size:13px;border:1px solid var(--line);border-radius:10px;padding:5px 8px}
+select,input[type=number]{font:inherit;font-size:13px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:5px 7px}
+input[type=number]{width:64px}
+.opts{display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:10px;align-items:center;font-size:13px}
+.opts label{display:flex;align-items:center;gap:6px}
+.sw-toggle{position:relative;width:38px;height:22px;border-radius:11px;background:var(--line);transition:background .2s;flex:none}
+.sw-toggle::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .2s cubic-bezier(.2,.8,.2,1);box-shadow:0 1px 2px rgba(0,0,0,.3)}
+input:checked+.sw-toggle{background:var(--run)}
+input:checked+.sw-toggle::after{transform:translateX(16px)}
+.opts input[type=checkbox]{position:absolute;opacity:0;width:0;height:0}
+details{margin-top:8px}
+summary{cursor:pointer;color:var(--mute);font-size:13px;user-select:none}
+.err{color:var(--err);font-size:13px;margin-top:6px}
+.alerts{margin-bottom:12px}
+.alert{display:flex;justify-content:space-between;gap:10px;padding:10px 14px;border-radius:10px;font-size:13px;margin-bottom:6px;background:var(--card);border:1px solid var(--line)}
+.alert.error{border-color:var(--err);color:var(--err)}
+.alert time{color:var(--mute);white-space:nowrap}
+.empty{color:var(--mute);text-align:center;padding:22px 0}
+.toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);background:var(--ink);color:var(--card);padding:10px 16px;border-radius:999px;font-size:13px;opacity:0;transition:opacity .2s,transform .25s cubic-bezier(.2,.8,.2,1);pointer-events:none;max-width:90vw}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+.toast.error{background:var(--err);color:#fff}
+pre{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;background:var(--bg);padding:10px;border-radius:8px;max-height:260px;overflow:auto;margin:8px 0 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="dot" id="dot"></span>GSP Print Queue</h1>
+    <span class="sub" id="fw"></span>
+  </header>
+
+  <div class="alerts" id="alerts"></div>
+
+  <div class="card" id="printer">
+    <div class="state"><div class="big" id="pstate">Connecting</div><div class="sub" id="pname"></div></div>
+    <div class="bar"><i id="pbar"></i></div>
+    <div class="sub" id="pprog"></div>
+    <div class="kv">
+      <div><b id="tn">–</b><span>Nozzle</span></div>
+      <div><b id="tb">–</b><span>Bed</span></div>
+      <div><b id="tc">–</b><span>Chamber</span></div>
+    </div>
+    <div class="trays" id="trays"></div>
+    <div class="actions" id="pactions"></div>
+  </div>
+
+  <div class="qhead">
+    <h2>Queue <span class="sub" id="qinfo"></span></h2>
+    <button id="runbtn" class="primary">Start queue</button>
+  </div>
+
+  <div class="drop" id="drop">
+    <input type="file" id="file" accept=".3mf" multiple>
+    <div id="droptext">Drop sliced .3mf here or tap to choose</div>
+  </div>
+
+  <div id="jobs"></div>
+
+  <div class="qhead" id="histhead" style="display:none">
+    <h2>History</h2>
+    <button class="sm" onclick="post('/api/queue/clear-done')">Clear</button>
+  </div>
+  <div id="history"></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let S=null, lastJobsSig='', busyUpload=false;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=s=>{s=Math.round(s||0);if(s<60)return s+'s';const h=Math.floor(s/3600),m=Math.round((s%3600)/60);return h?`${h}h ${m}m`:`${m}m`;};
+const t=(ms)=>new Date(ms*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+
+function toast(msg,err){const e=$('toast');e.textContent=msg;e.className='toast show'+(err?' error':'');clearTimeout(e._t);e._t=setTimeout(()=>e.className='toast',2600);}
+
+async function post(url,body){
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok||j.error){toast(j.error||('Error '+r.status),true);throw new Error(j.error);}
+  refresh();return j;
+}
+
+async function refresh(){
+  try{
+    const r=await fetch('/api/state');S=await r.json();render();
+  }catch(e){$('pstate').textContent='Server offline';$('pstate').className='big err';}
+}
+
+function stateLabel(p){
+  if(!p.online)return['Offline','err'];
+  const m={RUNNING:['Printing','run'],PREPARE:['Preparing','run'],SLICING:['Preparing','run'],PAUSE:['Paused','warn'],FINISH:['Finished',''],FAILED:['Failed','err'],IDLE:['Idle','']};
+  return m[p.gcode_state]||[p.gcode_state||'Idle',''];
+}
+
+function render(){
+  const p=S.printer,q=S.queue;
+  $('dot').className='dot'+(p.online?' on':'');
+  $('fw').textContent=p.firmware?('X1C · fw '+p.firmware):'';
+  const [lab,cls]=stateLabel(p);
+  $('pstate').textContent=lab;$('pstate').className='big '+cls;
+  const active=['RUNNING','PREPARE','PAUSE','SLICING'].includes(p.gcode_state);
+  $('pname').textContent=active?p.subtask_name:'';
+  $('pbar').style.width=(active?p.percent:0)+'%';
+  $('pprog').textContent=active?`${p.percent}% · layer ${p.layer}/${p.total_layers} · ${p.remaining_min} min left`:(!p.online?'Printer not reachable on LAN':(!p.sdcard?'No microSD card in the printer. Insert one to print from the queue.':'Bed is free when idle'));
+  $('pprog').className=(p.online&&!p.sdcard&&!active)?'err':'sub';
+  $('tn').textContent=Math.round(p.nozzle)+'°'+(p.nozzle_target?' / '+Math.round(p.nozzle_target):'');
+  $('tb').textContent=Math.round(p.bed)+'°'+(p.bed_target?' / '+Math.round(p.bed_target):'');
+  $('tc').textContent=Math.round(p.chamber)+'°';
+  $('trays').innerHTML=p.trays.map(tr=>`<div class="tray${tr.empty?' empty':''}" title="Tray ${tr.id+1}"><span class="sw" style="background:${tr.color||'transparent'}"></span>${tr.empty?'Empty':esc(tr.name||tr.type)}</div>`).join('')||'<span class="sub">No AMS data yet</span>';
+  let acts='';
+  if(p.gcode_state==='RUNNING')acts+=`<button onclick="post('/api/printer/pause')">Pause print</button>`;
+  if(p.gcode_state==='PAUSE')acts+=`<button class="run" onclick="post('/api/printer/resume')">Resume print</button>`;
+  if(active)acts+=`<button class="danger" onclick="if(confirm('Stop the current print?'))post('/api/printer/stop')">Stop print</button>`;
+  $('pactions').innerHTML=acts;
+
+  const rb=$('runbtn');
+  rb.textContent=q.running?'Pause queue':'Start queue';
+  rb.className=q.running?'run':'primary';
+  rb.onclick=()=>post('/api/queue/run',{running:!q.running});
+  const queued=q.jobs.filter(j=>['queued','printing','preparing','uploading','starting'].includes(j.status));
+  $('qinfo').textContent=queued.length?`· ${queued.length} job${queued.length>1?'s':''} · ~${fmt(q.eta_s)}`:'· empty';
+
+  $('alerts').innerHTML=q.alerts.slice(-4).reverse().map(a=>`<div class="alert ${a.level}"><span>${esc(a.text)}</span><time>${t(a.t)}</time></div>`).join('')+(q.alerts.length?`<div style="text-align:right"><button class="sm" onclick="post('/api/alerts/clear')">Dismiss</button></div>`:'');
+
+  const sig=JSON.stringify(q.jobs.map(j=>[j.id,j.status,j.name,j.eject,j.ams_map,j.eject_params,j.bed_levelling,j.flow_cali,j.error]))+JSON.stringify(p.trays.map(t=>[t.id,t.type,t.color]));
+  if(sig===lastJobsSig)return;
+  lastJobsSig=sig;
+  const live=q.jobs.filter(j=>!['done','failed','stopped'].includes(j.status));
+  const hist=q.jobs.filter(j=>['done','failed','stopped'].includes(j.status));
+  $('jobs').innerHTML=live.length?live.map((j,i)=>jobCard(j,i,live.length,p.trays)).join(''):'<div class="empty">Queue is empty. Export a sliced plate from Bambu Studio and drop it above.</div>';
+  $('histhead').style.display=hist.length?'':'none';
+  $('history').innerHTML=hist.slice().reverse().map(j=>histCard(j)).join('');
+}
+
+function trayOptions(trays,sel){
+  const opts=trays.filter(t=>!t.empty).map(t=>`<option value="${t.id}"${t.id===sel?' selected':''}>${t.id===254?'Ext':'T'+(t.id+1)} ${esc(t.name||t.type)}</option>`);
+  if(!opts.length)opts.push(`<option value="${sel}">T${sel+1}</option>`);
+  return opts.join('');
+}
+
+function jobCard(j,i,n,trays){
+  const busy=['preparing','uploading','starting'].includes(j.status);
+  const cur=j.status==='printing'||busy;
+  const ep=j.eject_params||{};
+  const fils=(j.filaments.length?j.filaments:[{slot:1,type:'',color:''}]).map((f,k)=>`<label><span class="sw" style="background:${esc(f.color||'#999')}"></span>${esc(f.type||'Filament '+(k+1))} →
+    <select ${cur?'disabled':''} onchange="setTray('${j.id}',${k},this.value)">${trayOptions(trays,(j.ams_map||[])[k]??0)}</select></label>`).join('');
+  return `<div class="card job${cur?' current':''}">
+    <div class="top"><div><div class="name">${esc(j.name)}</div>
+      <div class="meta">~${fmt(j.time_s)} · ${j.objects.length} object${j.objects.length===1?'':'s'} · ${j.max_z} mm tall</div></div>
+      <span class="badge ${j.status}">${esc(j.status)}</span></div>
+    <div class="fil">${fils}</div>
+    <div class="opts">
+      <label><input type="checkbox" ${j.eject?'checked':''} ${cur?'disabled':''} onchange="upd('${j.id}',{eject:this.checked})"><span class="sw-toggle"></span>Auto eject</label>
+      <label><input type="checkbox" ${j.bed_levelling?'checked':''} ${cur?'disabled':''} onchange="upd('${j.id}',{bed_levelling:this.checked})"><span class="sw-toggle"></span>Bed leveling</label>
+    </div>
+    ${j.eject?`<details><summary>Eject settings</summary>
+      <div class="opts">
+        <label>Cool <input type="number" min="0" max="60" step="1" value="${ep.cool_min}" ${cur?'disabled':''} onchange="upd('${j.id}',{eject_params:{cool_min:this.value}})"> min</label>
+        <label>Push height <input type="number" min="1" max="20" step="0.5" value="${ep.push_z}" ${cur?'disabled':''} onchange="upd('${j.id}',{eject_params:{push_z:this.value}})"> mm</label>
+        <label>Speed <input type="number" min="10" max="300" step="10" value="${ep.push_speed}" ${cur?'disabled':''} onchange="upd('${j.id}',{eject_params:{push_speed:this.value}})"> mm/s</label>
+        <button class="sm" onclick="preview('${j.id}',this)">Show G-code</button>
+      </div><div id="prev-${j.id}"></div></details>`:''}
+    ${j.error?`<div class="err">${esc(j.error)}</div>`:''}
+    <div class="actions">
+      ${cur?'':`<button class="sm" ${i===0?'disabled':''} onclick="post('/api/job/${j.id}/move',{dir:'up'})">↑</button>
+      <button class="sm" ${i===n-1?'disabled':''} onclick="post('/api/job/${j.id}/move',{dir:'down'})">↓</button>
+      <button class="sm danger" onclick="post('/api/job/${j.id}/delete')">Remove</button>`}
+    </div>
+  </div>`;
+}
+
+function histCard(j){
+  return `<div class="card job"><div class="top"><div><div class="name">${esc(j.name)}</div>
+    <div class="meta">${j.finished?t(j.finished):''}${j.error?' · '+esc(j.error):''}</div></div>
+    <span class="badge ${j.status}">${esc(j.status)}</span></div>
+    <div class="actions"><button class="sm" onclick="post('/api/job/${j.id}/requeue')">Print again</button>
+    <button class="sm" onclick="post('/api/job/${j.id}/delete')">Remove</button></div></div>`;
+}
+
+function upd(id,patch){post('/api/job/'+id+'/update',patch);}
+function setTray(id,k,val){const j=S.queue.jobs.find(x=>x.id===id);const m=(j.ams_map||[]).slice();while(m.length<=k)m.push(0);m[k]=parseInt(val,10);upd(id,{ams_map:m});}
+async function preview(id,btn){const r=await fetch('/api/job/'+id+'/eject-preview');const el=$('prev-'+id);el.innerHTML='<pre>'+esc(await r.text())+'</pre>';btn.disabled=true;}
+
+async function upload(files){
+  if(busyUpload)return;busyUpload=true;
+  for(const f of files){
+    $('droptext').textContent='Uploading '+f.name+'…';
+    try{
+      const r=await fetch('/api/upload?name='+encodeURIComponent(f.name),{method:'POST',body:f});
+      const j=await r.json();
+      if(!r.ok||j.error)toast(j.error||'Upload failed',true);else toast('Added '+j.jobs.map(x=>x.name).join(', '));
+    }catch(e){toast('Upload failed',true);}
+  }
+  $('droptext').textContent='Drop sliced .3mf here or tap to choose';busyUpload=false;refresh();
+}
+const drop=$('drop');
+drop.onclick=()=>$('file').click();
+$('file').onchange=e=>{upload([...e.target.files]);e.target.value='';};
+['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
+drop.addEventListener('drop',e=>upload([...e.dataTransfer.files]));
+document.addEventListener('dragover',e=>e.preventDefault());document.addEventListener('drop',e=>e.preventDefault());
+
+refresh();setInterval(refresh,2000);
+</script>
+</body>
+</html>
