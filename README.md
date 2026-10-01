@@ -26,7 +26,26 @@ the parts, then for every object on the plate moves behind it, lowers the nozzle
 push height (default 3 mm) and drives forward to Y=-3 at the push speed (default
 100 mm/s). Wide objects get several passes. The printer door must be open or removed and a
 box placed in front. Best for flat or squat parts in PLA and PETG; tall narrow parts can
-snap instead of sliding. Per-job toggle and settings live in the panel.
+snap instead of sliding. Per-job toggle and settings live in the panel. The pushes run at reduced XY motor
+current, so a part that will not budge makes the motors skip steps instead of bending
+anything; XY is re-homed afterwards.
+
+## Clean plate
+
+The stock X1C start G-code draws two priming lines at the front of the plate. With
+"No purge lines" on (default) the queue rewrites both sections so the filament is primed
+into the waste chute at the back and wiped on the nozzle wiper. Nothing is left on the
+plate after an eject, so the next job starts on a clean surface.
+
+## Plate check
+
+Before every job the queue photographs the plate with the chamber camera (light on, bed
+parked at Z=150, head at the back) and compares it with a reference photo of the empty
+plate taken once from the panel. If more than 2% of the plate region differs, the queue
+pauses with an alert instead of printing onto a part that did not eject. Bed leveling
+stays on as a second net: a probe landing on a leftover part makes the printer abort.
+Needs `ffmpeg` on PATH or in `bin/ffmpeg`. Region and threshold are `plate_region` and
+`plate_threshold` in `config.json`.
 
 ## Run
 

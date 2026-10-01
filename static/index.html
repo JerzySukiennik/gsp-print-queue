@@ -82,6 +82,10 @@ summary{cursor:pointer;color:var(--mute);font-size:13px;user-select:none}
 .alert.error{border-color:var(--err);color:var(--err)}
 .alert time{color:var(--mute);white-space:nowrap}
 .empty{color:var(--mute);text-align:center;padding:22px 0}
+.cam{position:relative;border-radius:10px;overflow:hidden;background:#000;aspect-ratio:1168/720}
+.cam img{display:block;width:100%;height:100%;object-fit:cover}
+.cam .region{position:absolute;border:1.5px dashed rgba(255,255,255,.55);border-radius:4px;pointer-events:none}
+.badge.checking{background:var(--warn);color:#fff}
 .toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);background:var(--ink);color:var(--card);padding:10px 16px;border-radius:999px;font-size:13px;opacity:0;transition:opacity .2s,transform .25s cubic-bezier(.2,.8,.2,1);pointer-events:none;max-width:90vw}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .toast.error{background:var(--err);color:#fff}
@@ -110,6 +114,20 @@ pre{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wr
     <div class="actions" id="pactions"></div>
   </div>
 
+  <div class="card" id="camcard">
+    <div class="cam"><img id="cam" alt="" ><div class="region" id="region"></div></div>
+    <div class="row" style="justify-content:space-between;margin-top:10px">
+      <div class="sub" id="platestat"></div>
+      <label class="opts" style="margin:0"><input type="checkbox" id="platetoggle"><span class="sw-toggle"></span>Plate check</label>
+    </div>
+    <div class="actions" style="margin-top:10px">
+      <button class="sm" id="lightbtn">Light</button>
+      <button class="sm" onclick="checkPlate(this)">Check plate now</button>
+      <button class="sm" onclick="setRef(this)">Set empty-plate reference</button>
+      <button class="sm" id="refbtn" onclick="toggleRef()">Show reference</button>
+    </div>
+  </div>
+
   <div class="qhead">
     <h2>Queue <span class="sub" id="qinfo"></span></h2>
     <button id="runbtn" class="primary">Start queue</button>
@@ -131,7 +149,10 @@ pre{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wr
 <div class="toast" id="toast"></div>
 
 <script>
-let S=null, lastJobsSig='', busyUpload=false;
+let S=null, lastJobsSig='', busyUpload=false, camStamp=0, showRef=false;
+async function checkPlate(b){b.disabled=true;try{const r=await post('/api/plate/check');toast(r.ok?'Plate clear':'Plate NOT clear',!r.ok);camStamp=0;$('cam').src='/api/plate-last.jpg?'+Date.now();showRef=false;$('refbtn').textContent='Show reference';}finally{b.disabled=false;}}
+async function setRef(b){if(!confirm('Plate empty and printer idle? The bed parks, the light goes on and a reference photo is taken.'))return;b.disabled=true;try{await post('/api/plate/set-reference');toast('Reference saved');camStamp=0;}finally{b.disabled=false;}}
+function toggleRef(){showRef=!showRef;$('refbtn').textContent=showRef?'Show live':'Show reference';if(showRef)$('cam').src='/api/plate-ref.jpg?'+Date.now();else{camStamp=0;}}
 const $=id=>document.getElementById(id);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=s=>{s=Math.round(s||0);if(s<60)return s+'s';const h=Math.floor(s/3600),m=Math.round((s%3600)/60);return h?`${h}h ${m}m`:`${m}m`;};
@@ -179,6 +200,17 @@ function render(){
   if(active)acts+=`<button class="danger" onclick="if(confirm('Stop the current print?'))post('/api/printer/stop')">Stop print</button>`;
   $('pactions').innerHTML=acts;
 
+  const pl=q.plate;
+  $('camcard').style.display=pl.camera?'':'none';
+  $('platetoggle').checked=pl.enabled;
+  $('platetoggle').onchange=e=>post('/api/plate/enable',{enabled:e.target.checked});
+  const reg=pl.region;$('region').style.cssText=`left:${reg[0]*100}%;top:${reg[1]*100}%;width:${(reg[2]-reg[0])*100}%;height:${(reg[3]-reg[1])*100}%`;
+  let ps=pl.has_ref?`Reference ${t(pl.ref_time)}`:'No empty-plate reference yet';
+  if(pl.last)ps+=` · last check ${t(pl.last.t)}: <b style="color:${pl.last.ok?'var(--run)':'var(--err)'}">${pl.last.ok?'clear':'not clear'}</b> (${(pl.last.changed*100).toFixed(1)}% differs, limit ${(pl.threshold*100).toFixed(0)}%)`;
+  $('platestat').innerHTML=ps;
+  $('lightbtn').textContent=p.light?'Light off':'Light on';
+  $('lightbtn').onclick=()=>post('/api/printer/light',{on:!p.light});
+  if(!showRef&&pl.camera&&Date.now()-camStamp>10000){camStamp=Date.now();$('cam').src='/api/camera.jpg?'+camStamp;}
   const rb=$('runbtn');
   rb.textContent=q.running?'Pause queue':'Start queue';
   rb.className=q.running?'run':'primary';
@@ -188,7 +220,7 @@ function render(){
 
   $('alerts').innerHTML=q.alerts.slice(-4).reverse().map(a=>`<div class="alert ${a.level}"><span>${esc(a.text)}</span><time>${t(a.t)}</time></div>`).join('')+(q.alerts.length?`<div style="text-align:right"><button class="sm" onclick="post('/api/alerts/clear')">Dismiss</button></div>`:'');
 
-  const sig=JSON.stringify(q.jobs.map(j=>[j.id,j.status,j.name,j.eject,j.ams_map,j.eject_params,j.bed_levelling,j.flow_cali,j.error]))+JSON.stringify(p.trays.map(t=>[t.id,t.type,t.color]));
+  const sig=JSON.stringify(q.jobs.map(j=>[j.id,j.status,j.name,j.eject,j.ams_map,j.eject_params,j.bed_levelling,j.flow_cali,j.clean_plate,j.error]))+JSON.stringify(p.trays.map(t=>[t.id,t.type,t.color]));
   if(sig===lastJobsSig)return;
   lastJobsSig=sig;
   const live=q.jobs.filter(j=>!['done','failed','stopped'].includes(j.status));
@@ -218,6 +250,7 @@ function jobCard(j,i,n,trays){
     <div class="opts">
       <label><input type="checkbox" ${j.eject?'checked':''} ${cur?'disabled':''} onchange="upd('${j.id}',{eject:this.checked})"><span class="sw-toggle"></span>Auto eject</label>
       <label><input type="checkbox" ${j.bed_levelling?'checked':''} ${cur?'disabled':''} onchange="upd('${j.id}',{bed_levelling:this.checked})"><span class="sw-toggle"></span>Bed leveling</label>
+      <label title="Priming lines go into the waste chute instead of the front of the plate"><input type="checkbox" ${j.clean_plate!==false?'checked':''} ${cur?'disabled':''} onchange="upd('${j.id}',{clean_plate:this.checked})"><span class="sw-toggle"></span>No purge lines</label>
     </div>
     ${j.eject?`<details><summary>Eject settings</summary>
       <div class="opts">

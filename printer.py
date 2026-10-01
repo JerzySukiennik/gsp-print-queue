@@ -118,8 +118,16 @@ class Printer:
     def stop(self):
         self.publish({"print": {"sequence_id": self._next_seq(), "command": "stop", "param": ""}})
 
+    def light(self, on):
+        self.publish({"system": {"sequence_id": self._next_seq(), "command": "ledctrl", "led_node": "chamber_light",
+                                 "led_mode": "on" if on else "off", "led_on_time": 500, "led_off_time": 500,
+                                 "loop_times": 0, "interval_time": 0}})
+
+    def gcode(self, lines):
+        self.publish({"print": {"sequence_id": self._next_seq(), "command": "gcode_line", "param": "\n".join(lines) + "\n"}})
+
     def start_print(self, remote_name, plate_gcode, subtask_name, ams_mapping, use_ams=True,
-                    bed_levelling=True, flow_cali=False, url_base="file:///sdcard"):
+                    bed_levelling=True, flow_cali=False, url_base="file:///sdcard", layer_inspect=True):
         payload = {"print": {
             "sequence_id": self._next_seq(),
             "command": "project_file",
@@ -137,7 +145,7 @@ class Printer:
             "bed_levelling": bool(bed_levelling),
             "flow_cali": bool(flow_cali),
             "vibration_cali": False,
-            "layer_inspect": True,
+            "layer_inspect": bool(layer_inspect),
             "ams_mapping": list(ams_mapping) if use_ams else [],
             "use_ams": bool(use_ams),
         }}
@@ -233,6 +241,7 @@ class Printer:
             "chamber": s.get("chamber_temper", 0),
             "wifi": s.get("wifi_signal", ""),
             "sdcard": bool(s.get("sdcard", False)),
+            "light": any(l.get("node") == "chamber_light" and l.get("mode") == "on" for l in (s.get("lights_report") or [])),
             "trays": trays,
             "errors": errors,
             "last_error": self.last_error,

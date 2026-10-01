@@ -10,6 +10,8 @@ BED_MAX = 256.0
 Y_FRONT = -3.0
 Y_BACK_MAX = 258.0
 Z_MAX = 250.0
+PARK_Z = 150.0
+PARK_GCODE = ["G90", "G1 Z150 F600", "G1 X128 Y250 F6000", "M400"]
 
 DEFAULT_PARAMS = {
     "cool_min": 12,
@@ -128,6 +130,7 @@ def eject_gcode(objects, max_z, params=None):
         "M400",
         "M17 X1.2 Y1.2 Z0.75 ; restore motor current",
         "G28 X ; home XY",
+        "M17 X0.8 Y0.8 ; limit push force, motors slip before anything breaks",
         "M140 S0",
         "M104 S0",
         "M106 P2 S255 ; aux fan",
@@ -155,6 +158,8 @@ def eject_gcode(objects, max_z, params=None):
         lines.append("M400")
         lines.append("G1 Z%.1f F600" % safe_z)
     lines += [
+        "G1 Z%.1f F600 ; park height for the plate check" % max(PARK_Z, safe_z),
+        "M17 X1.2 Y1.2 Z0.75",
         "G28 X ; re-home XY",
         "G1 X128 Y250 F3600",
         "M17 X0.8 Y0.8 Z0.5",
@@ -165,27 +170,107 @@ def eject_gcode(objects, max_z, params=None):
     return "\n".join(lines)
 
 
-def prepare(src, dst, plate_index=1, eject_params=None, objects=None, max_z=0.0):
+LOAD_MARK = ";===== nozzle load line"
+PURGE_MARK = ";===== purge line to wipe the nozzle"
+LASER_MARK = ";=========== laser and rgb calibration"
+START_END = "; MACHINE_START_GCODE_END"
+
+
+def _block(text, start_mark, end_pred):
+    base = text.find("; EXECUTABLE_BLOCK_START")
+    i = text.find(start_mark, base if base >= 0 else 0)
+    if i < 0:
+        return None
+    j = text.find("\n", i) + 1
+    lines = text[j:].split("\n")
+    k = 0
+    for k, line in enumerate(lines):
+        if end_pred(line):
+            break
+    else:
+        return None
+    end = j + sum(len(l) + 1 for l in lines[:k])
+    return i, end
+
+
+def clean_plate(text):
+    """Move the two priming lines from the plate into the waste chute, leaving the plate empty."""
+    changed = False
+    span = _block(text, LOAD_MARK, lambda l: l.startswith(";====="))
+    if span:
+        body = text[span[0]:span[1]]
+        temp = re.search(r"^M109 S\S+", body, re.M)
+        repl = [
+            ";===== nozzle load line (GSP Print Queue: primed into the chute, nothing on the plate) =====",
+            "M975 S1", "G90", "M83", "T1000",
+            "G1 X65 Y265 Z0.8 F18000 ; chute",
+            temp.group(0) if temp else "M109 S220",
+            "G1 Z0.2",
+            "G1 E2 F300",
+            "G1 E15 F300",
+            "G1 X100 F12000 ; wipe",
+            "G1 X65 F12000",
+            "M400", "", "",
+        ]
+        text = text[:span[0]] + "\n".join(repl) + text[span[1]:]
+        changed = True
+    span = _block(text, PURGE_MARK, lambda l: l.startswith(START_END))
+    if span:
+        body = text[span[0]:span[1]]
+        temp = re.search(r"^M109 S\S+", body, re.M)
+        retr = re.search(r"^G1 E-(\S+) F(\S+)", body, re.M)
+        rl = retr.group(1) if retr else "0.8"
+        rf = retr.group(2) if retr else "1800"
+        repl = [
+            ";===== purge line (GSP Print Queue: primed into the chute, nothing on the plate) =====",
+            "G1 E-%s F%s" % (rl, rf),
+            "G1 X65 Y265 Z0.8 F18000 ; chute",
+            "G1 E%s F%s" % (rl, rf),
+            temp.group(0) if temp else "M109 S220",
+            "G1 Z0.2",
+            "G1 E6 F300",
+            "G1 X100 F12000 ; wipe",
+            "G1 X65 F12000",
+            "M400",
+        ]
+        text = text[:span[0]] + "\n".join(repl) + "\n" + text[span[1]:]
+        changed = True
+    span = _block(text, LASER_MARK, lambda l: l.startswith(";====="))
+    if span:
+        repl = [
+            ";=========== laser and rgb calibration (GSP Print Queue: skipped, no line on the plate to calibrate on) =====",
+            "M400", "M18 E", "M500 R", "", "",
+        ]
+        text = text[:span[0]] + "\n".join(repl) + text[span[1]:]
+        changed = True
+    return text, changed
+
+
+def prepare(src, dst, plate_index=1, eject_params=None, objects=None, max_z=0.0, clean=False):
     gcode_name = "Metadata/plate_%d.gcode" % plate_index
     md5_name = gcode_name + ".md5"
+    modify = eject_params is not None or clean
     with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
             data = zin.read(item.filename)
-            if eject_params is not None and item.filename == gcode_name:
+            if modify and item.filename == gcode_name:
                 text = data.decode("utf-8", "ignore")
-                block = eject_gcode(objects or [], max_z, eject_params)
-                pos = text.rfind(EXEC_END)
-                if pos >= 0:
-                    text = text[:pos] + block + text[pos:]
-                else:
-                    text = text + block
+                if clean:
+                    text, _ = clean_plate(text)
+                if eject_params is not None:
+                    block = eject_gcode(objects or [], max_z, eject_params)
+                    pos = text.rfind(EXEC_END)
+                    if pos >= 0:
+                        text = text[:pos] + block + text[pos:]
+                    else:
+                        text = text + block
                 data = text.encode("utf-8")
                 zout.writestr(item, data)
                 continue
-            if eject_params is not None and item.filename == md5_name:
+            if modify and item.filename == md5_name:
                 continue
             zout.writestr(item, data)
-    if eject_params is not None:
+    if modify:
         with zipfile.ZipFile(dst) as z:
             digest = hashlib.md5(z.read(gcode_name)).hexdigest().upper()
         with zipfile.ZipFile(dst, "a", zipfile.ZIP_DEFLATED) as z:

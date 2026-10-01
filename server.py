@@ -11,6 +11,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import camera
 import eject
 from printer import Printer
 
@@ -19,6 +20,9 @@ DATA = os.path.join(ROOT, "data")
 FILES = os.path.join(DATA, "files")
 PREP = os.path.join(DATA, "prepared")
 QUEUE_FILE = os.path.join(DATA, "queue.json")
+PLATE_REF = os.path.join(DATA, "plate_ref.jpg")
+PLATE_LAST = os.path.join(DATA, "plate_last.jpg")
+CAM_LAST = os.path.join(DATA, "camera.jpg")
 STATIC = os.path.join(ROOT, "static")
 
 ACTIVE_STATES = ("RUNNING", "PREPARE", "PAUSE", "SLICING")
@@ -71,6 +75,11 @@ class Queue:
         self.lock = threading.RLock()
         self.busy = False
         self._sd_warned = 0
+        self.plate = {"enabled": True, "last": None}
+        self.plate_region = cfg.get("plate_region", [0.45, 0.35, 1.0, 1.0])
+        self.plate_threshold = float(cfg.get("plate_threshold", 0.02))
+        self.cam_lock = threading.Lock()
+        self.cam_time = 0
         self.load()
 
     def load(self):
@@ -82,10 +91,11 @@ class Queue:
                 self.running = False
                 self.current = d.get("current")
                 self.alerts = d.get("alerts", [])
+                self.plate["enabled"] = d.get("plate_enabled", True)
             except Exception:
                 self.jobs = []
         for j in self.jobs:
-            if j["status"] in ("preparing", "uploading", "starting"):
+            if j["status"] in ("checking plate", "preparing", "uploading", "starting"):
                 j["status"] = "queued"
         if self.current and not any(j["id"] == self.current and j["status"] == "printing" for j in self.jobs):
             self.current = None
@@ -94,7 +104,8 @@ class Queue:
         with self.lock:
             tmp = QUEUE_FILE + ".tmp"
             with open(tmp, "w") as fh:
-                json.dump({"jobs": self.jobs, "current": self.current, "alerts": self.alerts[-50:]}, fh, indent=1)
+                json.dump({"jobs": self.jobs, "current": self.current, "alerts": self.alerts[-50:],
+                           "plate_enabled": self.plate["enabled"]}, fh, indent=1)
             os.replace(tmp, QUEUE_FILE)
 
     def alert(self, text, level="error"):
@@ -138,6 +149,7 @@ class Queue:
                     "eject_params": dict(eject.DEFAULT_PARAMS),
                     "bed_levelling": True,
                     "flow_cali": False,
+                    "clean_plate": True,
                     "status": "queued",
                     "added": time.time(),
                     "started": None,
@@ -154,7 +166,7 @@ class Queue:
             j = self.job(jid)
             if not j:
                 return None
-            for key in ("eject", "bed_levelling", "flow_cali"):
+            for key in ("eject", "bed_levelling", "flow_cali", "clean_plate"):
                 if key in patch:
                     j[key] = bool(patch[key])
             if "name" in patch and str(patch["name"]).strip():
@@ -221,6 +233,53 @@ class Queue:
             self.running = bool(flag)
             self.save()
 
+    def _url(self):
+        return camera.stream_url(self.cfg["printer_ip"], self.cfg["access_code"])
+
+    def snapshot(self, path=CAM_LAST, max_age=0):
+        with self.cam_lock:
+            if max_age and os.path.exists(path) and time.time() - os.path.getmtime(path) < max_age:
+                return path
+            camera.grab_jpeg(self._url(), path)
+            return path
+
+    def _lit_snapshot(self, path):
+        snap = self.printer.snapshot()
+        was_on = snap.get("light")
+        if not was_on:
+            self.printer.light(True)
+            time.sleep(2.5)
+        try:
+            self.snapshot(path)
+        finally:
+            if not was_on:
+                self.printer.light(False)
+
+    def set_reference(self):
+        if not camera.available():
+            raise RuntimeError("ffmpeg not found, camera features are off")
+        snap = self.printer.snapshot()
+        if snap["gcode_state"] in ACTIVE_STATES:
+            raise RuntimeError("Printer is busy, set the reference when it is idle")
+        self.printer.gcode(eject.PARK_GCODE)
+        time.sleep(6)
+        self._lit_snapshot(PLATE_REF)
+        self.plate["last"] = None
+        self.alert("Empty-plate reference saved", "info")
+
+    def check_plate(self):
+        if not camera.available():
+            return {"ok": False, "reason": "ffmpeg not found"}
+        if not os.path.exists(PLATE_REF):
+            return {"ok": False, "reason": "no empty-plate reference yet"}
+        self._lit_snapshot(PLATE_LAST)
+        res = camera.compare(camera.jpeg_to_gray(PLATE_REF), camera.jpeg_to_gray(PLATE_LAST), self.plate_region)
+        res["ok"] = res["changed"] <= self.plate_threshold
+        res["t"] = time.time()
+        res["threshold"] = self.plate_threshold
+        self.plate["last"] = res
+        return res
+
     def tick(self):
         snap = self.printer.snapshot()
         state = snap["gcode_state"]
@@ -280,11 +339,25 @@ class Queue:
             j = self.job(jid)
             if not j:
                 return
+            if self.plate["enabled"]:
+                j["status"] = "checking plate"
+                self.save()
+                res = self.check_plate()
+                if not res["ok"]:
+                    with self.lock:
+                        j["status"] = "queued"
+                        self.running = False
+                        if res.get("reason"):
+                            self.alert("Plate check unavailable: %s. Set the reference or turn the check off." % res["reason"])
+                        else:
+                            self.alert("Plate not clear (%.1f%% of the plate differs from the empty reference). Clear it and start the queue again." % (res["changed"] * 100))
+                        self.save()
+                    return
             j["status"] = "preparing"
             self.save()
             prepared = os.path.join(PREP, jid + ".3mf")
             params = j["eject_params"] if j.get("eject") else None
-            eject.prepare(j["file"], prepared, j["plate"], params, j.get("objects"), j.get("max_z", 0))
+            eject.prepare(j["file"], prepared, j["plate"], params, j.get("objects"), j.get("max_z", 0), j.get("clean_plate", True))
             j["status"] = "uploading"
             self.save()
             remote = "gspq_%s.3mf" % jid
@@ -297,7 +370,8 @@ class Queue:
             started = False
             for base in bases:
                 self.printer.start_print(remote, j["gcode"], subtask, j["ams_map"], True,
-                                         j.get("bed_levelling", True), j.get("flow_cali", False), base)
+                                         j.get("bed_levelling", True), j.get("flow_cali", False), base,
+                                         layer_inspect=not j.get("clean_plate", True))
                 deadline = time.time() + 45
                 while time.time() < deadline:
                     time.sleep(2)
@@ -342,10 +416,14 @@ class Queue:
             jobs = json.loads(json.dumps(self.jobs))
             eta = 0
             for j in jobs:
-                if j["status"] in ("queued", "printing", "preparing", "uploading", "starting"):
+                if j["status"] in ("queued", "printing", "checking plate", "preparing", "uploading", "starting"):
                     eta += j.get("time_s", 0) + (int(j["eject_params"].get("cool_min", 0)) * 60 if j.get("eject") else 0)
             return {"running": self.running, "current": self.current, "jobs": jobs,
-                    "alerts": self.alerts[-20:], "eta_s": eta, "busy": self.busy}
+                    "alerts": self.alerts[-20:], "eta_s": eta, "busy": self.busy,
+                    "plate": {"enabled": self.plate["enabled"], "has_ref": os.path.exists(PLATE_REF),
+                              "ref_time": os.path.getmtime(PLATE_REF) if os.path.exists(PLATE_REF) else None,
+                              "last": self.plate["last"], "camera": camera.available(),
+                              "region": self.plate_region, "threshold": self.plate_threshold}}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -389,6 +467,26 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/state":
             self._json({"printer": self.printer.snapshot(), "queue": self.queue.public(),
                         "config": {"ip": self.cfg["printer_ip"], "serial": self.cfg["serial"]}, "now": time.time()})
+            return
+        if u.path in ("/api/camera.jpg", "/api/plate-ref.jpg", "/api/plate-last.jpg"):
+            path = {"/api/camera.jpg": CAM_LAST, "/api/plate-ref.jpg": PLATE_REF, "/api/plate-last.jpg": PLATE_LAST}[u.path]
+            try:
+                if u.path == "/api/camera.jpg":
+                    if not camera.available():
+                        return self._json({"error": "ffmpeg not found"}, 404)
+                    self.queue.snapshot(CAM_LAST, max_age=8)
+                if not os.path.exists(path):
+                    return self._json({"error": "no image"}, 404)
+                with open(path, "rb") as fh:
+                    body = fh.read()
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
             return
         m = re.fullmatch(r"/api/job/([0-9a-f]+)/eject-preview", u.path)
         if m:
@@ -449,6 +547,18 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/printer/stop":
                 self.printer.stop()
                 return self._json({"ok": True})
+            if u.path == "/api/printer/light":
+                self.printer.light(bool(self._body().get("on")))
+                return self._json({"ok": True})
+            if u.path == "/api/plate/enable":
+                self.queue.plate["enabled"] = bool(self._body().get("enabled"))
+                self.queue.save()
+                return self._json({"ok": True})
+            if u.path == "/api/plate/set-reference":
+                self.queue.set_reference()
+                return self._json({"ok": True})
+            if u.path == "/api/plate/check":
+                return self._json(self.queue.check_plate())
             if u.path == "/api/printer/refresh":
                 self.printer.pushall()
                 return self._json({"ok": True})
@@ -467,7 +577,7 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "requeue":
                     return self._json({"ok": True, "job": self.queue.requeue(jid)})
             return self._json({"error": "not found"}, 404)
-        except ValueError as e:
+        except (ValueError, RuntimeError) as e:
             return self._json({"error": str(e)}, 400)
         except Exception as e:
             traceback.print_exc()
